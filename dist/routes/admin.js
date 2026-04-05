@@ -163,13 +163,94 @@ router.post('/parse-screenshot', multerSingle, async (req, res) => {
         const image = await jimp_1.Jimp.read(buffer);
         const imgWidth = image.width;
         const imgHeight = image.height;
-        const cropX = 0;
-        const cropY = 50; // skip status bar
-        const cropWidth = Math.min(Math.round(imgWidth * 0.60), imgWidth);
-        const cropHeight = Math.min(Math.round(imgHeight * 0.42), imgHeight - cropY);
+        // Smart bottle region detection:
+        // Score each row — a "bottle image row" has light/grey pixels on the left edge
+        // AND non-white photo pixels in the middle. Skip top 130px (status bar + nav).
+        const SKIP_TOP = 130;
+        const SKIP_BOTTOM = 50;
+        const rawScores = [];
+        for (let y = SKIP_TOP; y < imgHeight - SKIP_BOTTOM; y++) {
+            // Sample left edge (first 7% of width)
+            const leftEdgeEnd = Math.floor(imgWidth * 0.07);
+            let leftGreyCount = 0;
+            for (let x = 0; x < leftEdgeEnd; x++) {
+                const pixel = image.getPixelColor(x, y);
+                const r = (pixel >> 24) & 0xff;
+                const g = (pixel >> 16) & 0xff;
+                const b = (pixel >> 8) & 0xff;
+                // Light/grey pixel: all channels > 200
+                if (r > 200 && g > 200 && b > 200)
+                    leftGreyCount++;
+            }
+            const leftGreyFrac = leftGreyCount / leftEdgeEnd;
+            // Sample middle (7%–60% of width) for photo content (not pure white)
+            const midStart = Math.floor(imgWidth * 0.07);
+            const midEnd = Math.floor(imgWidth * 0.60);
+            let photoCount = 0;
+            const midSamples = Math.min(midEnd - midStart, 30); // sample up to 30 pixels
+            const step = Math.max(1, Math.floor((midEnd - midStart) / midSamples));
+            let sampled = 0;
+            for (let x = midStart; x < midEnd; x += step) {
+                const pixel = image.getPixelColor(x, y);
+                const r = (pixel >> 24) & 0xff;
+                const g = (pixel >> 16) & 0xff;
+                const b = (pixel >> 8) & 0xff;
+                const maxC = Math.max(r, g, b);
+                if (maxC < 245)
+                    photoCount++; // not pure white
+                sampled++;
+            }
+            const midPhotoFrac = sampled > 0 ? photoCount / sampled : 0;
+            rawScores.push(leftGreyFrac > 0.5 && midPhotoFrac > 0.3 ? 1 : 0);
+        }
+        // Smooth scores with a 15-row moving average
+        const SMOOTH = 15;
+        const smoothed = rawScores.map((_, i) => {
+            const start = Math.max(0, i - SMOOTH);
+            const end = Math.min(rawScores.length, i + SMOOTH + 1);
+            const slice = rawScores.slice(start, end);
+            return slice.reduce((a, b) => a + b, 0) / slice.length;
+        });
+        // Find largest contiguous region above threshold
+        const THRESHOLD = 0.4;
+        let bestStart = -1, bestEnd = -1, bestLen = 0;
+        let curStart = -1;
+        for (let i = 0; i < smoothed.length; i++) {
+            if (smoothed[i] > THRESHOLD && curStart === -1) {
+                curStart = i;
+            }
+            else if (smoothed[i] <= THRESHOLD && curStart !== -1) {
+                const len = i - curStart;
+                if (len > bestLen) {
+                    bestLen = len;
+                    bestStart = curStart;
+                    bestEnd = i;
+                }
+                curStart = -1;
+            }
+        }
+        if (curStart !== -1) {
+            const len = smoothed.length - curStart;
+            if (len > bestLen) {
+                bestStart = curStart;
+                bestEnd = smoothed.length;
+            }
+        }
+        // Convert back to image coordinates (offset by SKIP_TOP) with 10px padding
+        let cropY, cropHeight;
+        if (bestStart >= 0) {
+            cropY = Math.max(0, bestStart + SKIP_TOP - 10);
+            const cropYEnd = Math.min(imgHeight, bestEnd + SKIP_TOP + 10);
+            cropHeight = cropYEnd - cropY;
+        }
+        else {
+            // Fallback: top third of image below nav bar
+            cropY = SKIP_TOP;
+            cropHeight = Math.round(imgHeight * 0.35);
+        }
         const croppedBuffer = await image
             .clone()
-            .crop({ x: cropX, y: cropY, w: cropWidth, h: cropHeight })
+            .crop({ x: 0, y: cropY, w: imgWidth, h: cropHeight })
             .getBuffer(jimp_1.JimpMime.png);
         const bottleBase64 = `data:image/png;base64,${croppedBuffer.toString('base64')}`;
         // ── 2. OCR the screenshot with Tesseract ──────────────────────────────
