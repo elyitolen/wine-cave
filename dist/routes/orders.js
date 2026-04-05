@@ -178,6 +178,10 @@ router.delete('/:id', (req, res) => {
         res.status(403).json({ error: 'Not your order' });
         return;
     }
+    if (order.status === 'cancelled') {
+        res.status(400).json({ error: 'Order is already cancelled' });
+        return;
+    }
     // Check offer is still open
     const offer = db_1.default.prepare("SELECT * FROM offers WHERE id = ? AND status = 'open'").get(order.offer_id);
     if (!offer) {

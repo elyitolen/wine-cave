@@ -67,7 +67,7 @@ router.get('/:id', (req, res) => {
 // POST /api/offers — create offer (admin only)
 router.post('/', auth_1.adminMiddleware, (req, res) => {
     const { title, producer, vintage, region, country, grape, score, price_per_bottle, currency, stock_bottles, image_url, vivino_url, description, closes_at } = req.body;
-    if (!title || !price_per_bottle || !stock_bottles) {
+    if (!title || !price_per_bottle || stock_bottles === undefined || stock_bottles === null) {
         res.status(400).json({ error: 'title, price_per_bottle, and stock_bottles are required' });
         return;
     }

@@ -61,7 +61,8 @@ db.exec(`
     amount REAL NOT NULL,
     currency TEXT DEFAULT 'CHF',
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid')),
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, offer_id)
   );
 `);
 // Seed demo data on first startup
@@ -140,4 +141,23 @@ function seedDemoData() {
     console.log('Seeded 4 demo wine offers.');
 }
 seedDemoData();
+// ── Migrations ────────────────────────────────────────────────────────────
+// Add UNIQUE(user_id, offer_id) to payments if it doesn't exist yet.
+// SQLite doesn't support ADD CONSTRAINT, so we rebuild the table idempotently.
+try {
+    const tableInfo = db.prepare("PRAGMA index_list('payments')").all();
+    const hasUnique = tableInfo.some(idx => idx.unique && idx.name.toLowerCase().includes('user_id'));
+    if (!hasUnique) {
+        // Check if a unique index already exists via a different naming
+        const indexes = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='payments'").all();
+        const uniqueOnUserOffer = indexes.some(i => i.sql && i.sql.includes('user_id') && i.sql.includes('offer_id'));
+        if (!uniqueOnUserOffer) {
+            db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_user_offer ON payments(user_id, offer_id)`);
+            console.log('[migration] Added UNIQUE index on payments(user_id, offer_id)');
+        }
+    }
+}
+catch (e) {
+    console.warn('[migration] payments unique index:', e);
+}
 exports.default = db;
