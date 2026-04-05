@@ -58,7 +58,9 @@ function parseOcrText(text) {
     // ── Stock bottles ──────────────────────────────────────────────────────
     const stockMatch = t.match(/[Oo]nly\s*(\d+)\s*(?:wooden\s*case\s*of\s*)?(\d+)?\s*bottles?\s*per\s*person/i) ||
         t.match(/[Ll]imited\s*@\s*(\d+)\s*bottles?\s*\/?\s*[Pp]erson/i) ||
-        t.match(/[Oo]nly\s*(\d+)\s*[Bb]ottles?\s*\/\s*[Pp]erson/i);
+        t.match(/[Oo]nly\s*(\d+)\s*[Bb]ottles?\s*\/\s*[Pp]erson/i) ||
+        t.match(/(\d+)\s*[Bb]ati[sl][\w!]*\s*[|/\\]\s*[Pp]erso/i) ||
+        t.match(/(\d+)\s*[Bb]ot(?:tles?)?\s*[|/\\]\s*[Pp]ers/i);
     let stock_bottles = null;
     if (stockMatch) {
         // If "1 wooden case of 6 bottles" → stock = 6
