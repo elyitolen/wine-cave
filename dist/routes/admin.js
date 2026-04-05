@@ -153,7 +153,7 @@ function parseOcrText(text) {
 // ── Vivino URL lookup via Brave Search ──────────────────────────────────────
 async function findVivinoUrl(producer, title, vintage) {
     try {
-        // Build search query: site:vivino.com {producer} {key name words} {vintage}
+        // Build search query: site:vivino.com {producer} {title words} {vintage}
         const nameWords = (title || '').replace(producer || '', '').trim();
         const queryParts = [
             'site:vivino.com',
@@ -162,39 +162,52 @@ async function findVivinoUrl(producer, title, vintage) {
             vintage ? String(vintage) : '',
         ].filter(Boolean);
         const query = queryParts.join(' ');
-        const res = await fetch('https://search.brave.com/search?q=' + encodeURIComponent(query), {
+        // Use Yahoo Search — returns Vivino URLs in RU= encoded params, works from servers
+        const res = await fetch('https://search.yahoo.com/search?p=' + encodeURIComponent(query), {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml',
                 'Accept-Language': 'en-US,en;q=0.9',
             },
-            signal: AbortSignal.timeout(8000),
+            redirect: 'follow',
+            signal: AbortSignal.timeout(10000),
         });
         if (!res.ok)
             return null;
         const html = await res.text();
-        // Extract all vivino.com wine URLs from the HTML
-        const urlMatches = html.match(/https:\/\/www\.vivino\.com[^"&<> ]*/g) || [];
-        const vivinoUrls = [...new Set(urlMatches)].filter(u => /\/w\/\d+/.test(u));
-        if (vivinoUrls.length === 0)
+        // Yahoo encodes result URLs in RU= query parameters
+        const ruMatches = html.match(/RU=(https?%3A%2F%2F[^%]+vivino[^&"<>]+)/gi) || [];
+        const vivinoUrls = ruMatches
+            .map(m => {
+            try {
+                return decodeURIComponent(m.replace(/^RU=/i, ''));
+            }
+            catch {
+                return '';
+            }
+        })
+            .filter(u => /vivino\.com\/.+\/w\/\d+/.test(u))
+            // Strip Yahoo tracking suffix (/RK=... /RS=...)
+            .map(u => u.replace(/\/(RK|RS)=[^/]*.*$/, '').replace(/[?&]bottle_count=.*$/, ''));
+        const uniqueUrls = [...new Set(vivinoUrls)];
+        if (uniqueUrls.length === 0)
             return null;
-        // Score each candidate URL against producer/title/vintage
+        // Score candidates against producer/title/vintage
         const normalize = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
         const prodNorm = normalize(producer || '');
         const titleNorm = normalize(title || '');
         const yearStr = vintage ? String(vintage) : '';
-        // Key words to match (length > 3 to avoid noise)
         const prodWords = prodNorm.split(' ').filter(w => w.length > 3);
         const titleWords = titleNorm.split(' ').filter(w => w.length > 3);
         let bestUrl = null;
         let bestScore = 0;
-        for (const url of vivinoUrls.slice(0, 8)) {
+        for (const url of uniqueUrls.slice(0, 8)) {
             const slug = normalize(url);
             let score = 0;
-            // Vintage year match — highest weight
+            // Vintage year in URL (year= param or slug) — highest weight
             if (yearStr && (url.includes('year=' + yearStr) || url.includes('-' + yearStr)))
                 score += 4;
-            // Producer name words in slug
+            // Producer words in slug
             prodWords.forEach(w => { if (slug.includes(w))
                 score += 2; });
             // Title words in slug
@@ -205,12 +218,13 @@ async function findVivinoUrl(producer, title, vintage) {
                 bestUrl = url;
             }
         }
-        // Require at minimum: vintage year match (4) + at least one name word (1) = 5
-        // OR strong producer + title match without vintage (useful for some queries)
+        // Require vintage match (4) + at least 1 name word match (1) = 5 minimum
         if (bestScore < 5)
             return null;
-        // Normalise URL: strip country prefix (US/, NL/, etc.) → use canonical /en/ form
-        const canonical = bestUrl.replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/en\//, 'https://www.vivino.com/').replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/([a-z]{2})\//, 'https://www.vivino.com/$2/');
+        // Normalise URL: strip country/locale prefix → canonical form
+        const canonical = bestUrl
+            .replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/en\//, 'https://www.vivino.com/')
+            .replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/([a-z]{2})\//, 'https://www.vivino.com/$2/');
         return canonical;
     }
     catch (err) {
