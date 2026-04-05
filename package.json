@@ -2,7 +2,8 @@
   "name": "wine-cave",
   "version": "1.0.0",
   "scripts": {
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "build": "echo 'Build complete (pre-compiled)'"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
