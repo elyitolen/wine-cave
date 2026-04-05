@@ -7,7 +7,7 @@ const express_1 = require("express");
 const db_1 = __importDefault(require("../db"));
 const auth_1 = require("../middleware/auth");
 const multer_1 = __importDefault(require("multer"));
-const sharp_1 = __importDefault(require("sharp"));
+const jimp_1 = require("jimp");
 const openai_1 = __importDefault(require("openai"));
 const router = (0, express_1.Router)();
 // Multer setup — memory storage, max 10MB
@@ -65,25 +65,19 @@ router.post('/parse-screenshot', multerSingle, async (req, res) => {
         }
         const file = req.file;
         const buffer = file.buffer;
-        // ── 1. Crop the wine bottle image using Sharp ──────────────────────────
-        const metadata = await (0, sharp_1.default)(buffer).metadata();
-        const imgWidth = metadata.width ?? 1080;
-        const imgHeight = metadata.height ?? 1920;
+        // ── 1. Crop the wine bottle image using Jimp ──────────────────────────
+        const image = await jimp_1.Jimp.read(buffer);
+        const imgWidth = image.width;
+        const imgHeight = image.height;
         // Bottle is in the upper-left to upper-center area
         const cropX = 0;
         const cropY = 50; // skip status bar
-        const cropWidth = Math.round(imgWidth * 0.55);
-        const cropHeight = Math.round(imgHeight * 0.40);
-        const croppedBuffer = await (0, sharp_1.default)(buffer)
-            .extract({
-            left: cropX,
-            top: cropY,
-            width: Math.min(cropWidth, imgWidth),
-            height: Math.min(cropHeight, imgHeight - cropY),
-        })
-            .trim()
-            .png()
-            .toBuffer();
+        const cropWidth = Math.min(Math.round(imgWidth * 0.60), imgWidth);
+        const cropHeight = Math.min(Math.round(imgHeight * 0.42), imgHeight - cropY);
+        const croppedBuffer = await image
+            .clone()
+            .crop({ x: cropX, y: cropY, w: cropWidth, h: cropHeight })
+            .getBuffer(jimp_1.JimpMime.png);
         const bottleBase64 = `data:image/png;base64,${croppedBuffer.toString('base64')}`;
         // ── 2. Parse wine details using OpenAI Vision ──────────────────────────
         let parsed;
