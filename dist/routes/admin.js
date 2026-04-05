@@ -164,44 +164,26 @@ router.post('/parse-screenshot', multerSingle, async (req, res) => {
         const imgWidth = image.width;
         const imgHeight = image.height;
         // Smart bottle region detection:
-        // Score each row — a "bottle image row" has light/grey pixels on the left edge
-        // AND non-white photo pixels in the middle. Skip top 130px (status bar + nav).
+        // Score each row by the fraction of "mid-tone" pixels (not pure white, not text-black).
+        // Bottle photo rows have many mid-tone pixels; text-on-white rows are mostly white.
         const SKIP_TOP = 130;
         const SKIP_BOTTOM = 50;
         const rawScores = [];
+        const step = Math.max(1, Math.floor(imgWidth / 50)); // sample ~50 pixels per row
         for (let y = SKIP_TOP; y < imgHeight - SKIP_BOTTOM; y++) {
-            // Sample left edge (first 7% of width)
-            const leftEdgeEnd = Math.floor(imgWidth * 0.07);
-            let leftGreyCount = 0;
-            for (let x = 0; x < leftEdgeEnd; x++) {
+            let midToneCount = 0;
+            let total = 0;
+            for (let x = 0; x < imgWidth; x += step) {
                 const pixel = image.getPixelColor(x, y);
                 const r = (pixel >> 24) & 0xff;
                 const g = (pixel >> 16) & 0xff;
                 const b = (pixel >> 8) & 0xff;
-                // Light/grey pixel: all channels > 200
-                if (r > 200 && g > 200 && b > 200)
-                    leftGreyCount++;
+                // Mid-tone: not pure white (maxC < 235) and not near-black (minC > 20)
+                if (Math.max(r, g, b) < 235 && Math.min(r, g, b) > 20)
+                    midToneCount++;
+                total++;
             }
-            const leftGreyFrac = leftGreyCount / leftEdgeEnd;
-            // Sample middle (7%–60% of width) for photo content (not pure white)
-            const midStart = Math.floor(imgWidth * 0.07);
-            const midEnd = Math.floor(imgWidth * 0.60);
-            let photoCount = 0;
-            const midSamples = Math.min(midEnd - midStart, 30); // sample up to 30 pixels
-            const step = Math.max(1, Math.floor((midEnd - midStart) / midSamples));
-            let sampled = 0;
-            for (let x = midStart; x < midEnd; x += step) {
-                const pixel = image.getPixelColor(x, y);
-                const r = (pixel >> 24) & 0xff;
-                const g = (pixel >> 16) & 0xff;
-                const b = (pixel >> 8) & 0xff;
-                const maxC = Math.max(r, g, b);
-                if (maxC < 245)
-                    photoCount++; // not pure white
-                sampled++;
-            }
-            const midPhotoFrac = sampled > 0 ? photoCount / sampled : 0;
-            rawScores.push(leftGreyFrac > 0.5 && midPhotoFrac > 0.3 ? 1 : 0);
+            rawScores.push(midToneCount / total);
         }
         // Smooth scores with a 15-row moving average
         const SMOOTH = 15;
