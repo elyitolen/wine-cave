@@ -25,7 +25,13 @@ app.use((0, cors_1.default)({
 app.use(express_1.default.json());
 // Health check (no auth)
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        openai_key_set: !!process.env.OPENAI_API_KEY,
+        openai_key_prefix: process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.slice(0, 7) + '...' : 'NOT SET',
+        admin_ids: process.env.ADMIN_IDS || 'NOT SET',
+    });
 });
 // Apply auth middleware to all API routes
 app.use('/api', auth_1.authMiddleware);
