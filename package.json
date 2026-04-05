@@ -1,11 +1,11 @@
 {
   "name": "cork-queue",
   "version": "1.0.0",
-  "description": "CorkQueue — Wine Cave Telegram Mini App",
   "main": "dist/index.cjs",
   "scripts": { "start": "node dist/index.cjs" },
   "engines": { "node": ">=20.0.0" },
   "dependencies": {
-    "better-sqlite3": "^11.7.0"
+    "better-sqlite3": "^11.7.0",
+    "jimp": "^0.22.12"
   }
 }
