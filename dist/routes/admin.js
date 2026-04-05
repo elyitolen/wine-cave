@@ -8,14 +8,13 @@ const db_1 = __importDefault(require("../db"));
 const auth_1 = require("../middleware/auth");
 const multer_1 = __importDefault(require("multer"));
 const jimp_1 = require("jimp");
-const openai_1 = __importDefault(require("openai"));
+const tesseract_js_1 = require("tesseract.js");
 const router = (0, express_1.Router)();
 // Multer setup — memory storage, max 10MB
 const upload = (0, multer_1.default)({
     storage: multer_1.default.memoryStorage(),
     limits: { fileSize: 10 * 1024 * 1024 },
 });
-// Cast multer middleware to avoid @types/multer / @types/express version conflicts
 const multerSingle = upload.single('screenshot');
 // All admin routes require admin privileges
 router.use(auth_1.adminMiddleware);
@@ -40,22 +39,115 @@ const PARSE_PROMPT = `You are analyzing a wine offer screenshot from Edulis (Swi
 For stock_bottles: look for "X bottles per person" or "Limited @ X bottles" — that is the per-person limit which is the stock to use.
 For score: use the highest critic score mentioned.
 For price: extract the numeric price per bottle in CHF excluding TVA.`;
-// Mock response for when OPENAI_API_KEY is not set
-const MOCK_PARSED = {
-    title: 'Château Example Saint-Émilion Grand Cru',
-    producer: 'Château Example',
-    vintage: 2020,
-    region: 'Saint-Émilion',
-    country: 'France',
-    grape: '70% Merlot, 30% Cabernet Franc',
-    price_per_bottle: 89.00,
-    currency: 'CHF',
-    stock_bottles: 6,
-    score: 95,
-    score_source: 'Robert Parker',
-    description: 'Rich and complex with layers of dark fruit, cedar, and spice. Long, velvety finish.',
-    vivino_url: null,
-};
+function parseOcrText(text) {
+    // Normalize text
+    const t = text.replace(/\s+/g, ' ').trim();
+    // ── Price ─────────────────────────────────────────────────────────────
+    const priceMatch = t.match(/[@®]\s*([\d.,]+)\s*CHF/i) ||
+        t.match(/([\d.,]+)\s*CHF\s*\/\s*b/i);
+    const price_per_bottle = priceMatch
+        ? parseFloat(priceMatch[1].replace(',', '.'))
+        : null;
+    // ── Vintage ───────────────────────────────────────────────────────────
+    const vintageMatch = t.match(/\b(19|20)\d{2}\b.*?@/) ||
+        t.match(/@.*?((?:19|20)\d{2})\b/) ||
+        t.match(/\b((19|20)\d{2})\s*@/);
+    // Scan for year near @ symbol
+    const yearNearPrice = t.match(/((?:19|20)\d{2})\s*[@®]/);
+    const vintage = yearNearPrice ? parseInt(yearNearPrice[1]) : null;
+    // ── Stock bottles ──────────────────────────────────────────────────────
+    const stockMatch = t.match(/[Oo]nly\s*(\d+)\s*(?:wooden\s*case\s*of\s*)?(\d+)?\s*bottles?\s*per\s*person/i) ||
+        t.match(/[Ll]imited\s*@\s*(\d+)\s*bottles?\s*\/?\s*[Pp]erson/i) ||
+        t.match(/[Oo]nly\s*(\d+)\s*[Bb]ottles?\s*\/\s*[Pp]erson/i);
+    let stock_bottles = null;
+    if (stockMatch) {
+        // If "1 wooden case of 6 bottles" → stock = 6
+        if (stockMatch[2]) {
+            stock_bottles = parseInt(stockMatch[2]);
+        }
+        else {
+            stock_bottles = parseInt(stockMatch[1]);
+        }
+    }
+    // ── Score ──────────────────────────────────────────────────────────────
+    const scoreMatches = [...t.matchAll(/(\d{2,3})\s*[Pp]oints?/g)];
+    const scores = scoreMatches.map(m => parseInt(m[1])).filter(s => s >= 85 && s <= 100);
+    const score = scores.length > 0 ? Math.max(...scores) : null;
+    // ── Score source ───────────────────────────────────────────────────────
+    const sourceMatch = t.match(/(Robert Parker|James Suckling|Jeb Dunnuck|Wine Spectator|Antonio Galloni|Wine Advocate|Vinous|Decanter)\s*[:\-]/i);
+    const score_source = sourceMatch ? sourceMatch[1] : null;
+    // ── Title and producer from the headline ──────────────────────────────
+    // Pattern: "0.75L - Producer WINE NAME (appellation) VINTAGE @ PRICE"
+    const headlineMatch = t.match(/0\.75L\s*[-–]\s*(.+?)\s*(?:(?:19|20)\d{2})\s*[@®]/i);
+    let title = null;
+    let producer = null;
+    if (headlineMatch) {
+        const rawTitle = headlineMatch[1].trim();
+        title = rawTitle;
+        // Extract producer: everything before the FIRST all-caps word sequence
+        // e.g. "Charles Noëllat GEVREY CHAMBERTIN En Pallud" → producer = "Charles Noëllat"
+        const producerMatch = rawTitle.match(/^(.+?)\s+(?=[A-ZÀ-Ÿ]{3,})/);
+        producer = producerMatch ? producerMatch[1].trim() : rawTitle.split(' ').slice(0, 2).join(' ');
+        // Append vintage to title
+        if (vintage)
+            title = `${rawTitle} ${vintage}`;
+    }
+    // ── Grape ──────────────────────────────────────────────────────────────
+    const grapeMatch = t.match(/[Gg]rape\s*[:\-]?\s*([^\n.]+(?:Pinot|Merlot|Cabernet|Syrah|Grenache|Riesling|Chardonnay|Nebbiolo|Sangiovese|Tempranillo)[^\n.]*)/i) ||
+        t.match(/(\d+%\s*(?:Pinot|Merlot|Cabernet|Syrah|Grenache|Riesling|Chardonnay|Nebbiolo|Sangiovese|Tempranillo)[^\n.;,]*(?:,\s*\d+%\s*\w+)*)/i) ||
+        t.match(/100%\s*(Pinot Noir|Merlot|Cabernet Sauvignon|Syrah|Grenache|Riesling|Chardonnay|Nebbiolo|Sangiovese)/i);
+    const grape = grapeMatch ? grapeMatch[1].trim().slice(0, 200) : null;
+    // ── Description: first long sentence after a critic name ──────────────
+    const descMatch = t.match(/\d{2,3}\s*[Pp]oints?\s+([A-Z][^.!?]+(?:[.!?][^.!?]+){0,3})/);
+    const description = descMatch ? descMatch[1].trim().slice(0, 400) : null;
+    // ── Country/region heuristics ──────────────────────────────────────────
+    let country = null;
+    let region = null;
+    const regionCountryMap = {
+        'Bordeaux': { region: 'Bordeaux', country: 'France' },
+        'Saint-Émilion': { region: 'Saint-Émilion', country: 'France' },
+        'Pomerol': { region: 'Pomerol', country: 'France' },
+        'Pauillac': { region: 'Pauillac', country: 'France' },
+        'Gevrey': { region: 'Gevrey-Chambertin', country: 'France' },
+        'Chambertin': { region: 'Gevrey-Chambertin', country: 'France' },
+        'Bourgogne': { region: 'Bourgogne', country: 'France' },
+        'Burgundy': { region: 'Bourgogne', country: 'France' },
+        'Hermitage': { region: 'Rhône', country: 'France' },
+        'Châteauneuf': { region: 'Châteauneuf-du-Pape', country: 'France' },
+        'Champagne': { region: 'Champagne', country: 'France' },
+        'Mosel': { region: 'Mosel', country: 'Germany' },
+        'Rheingau': { region: 'Rheingau', country: 'Germany' },
+        'Barolo': { region: 'Barolo', country: 'Italy' },
+        'Barbaresco': { region: 'Barbaresco', country: 'Italy' },
+        'Brunello': { region: 'Montalcino', country: 'Italy' },
+        'Rioja': { region: 'Rioja', country: 'Spain' },
+        'Priorat': { region: 'Priorat', country: 'Spain' },
+        'Napa': { region: 'Napa Valley', country: 'USA' },
+        'Wachau': { region: 'Wachau', country: 'Austria' },
+    };
+    for (const [keyword, val] of Object.entries(regionCountryMap)) {
+        if (t.includes(keyword)) {
+            region = val.region;
+            country = val.country;
+            break;
+        }
+    }
+    return {
+        title,
+        producer,
+        vintage,
+        region,
+        country,
+        grape,
+        price_per_bottle,
+        currency: 'CHF',
+        stock_bottles,
+        score,
+        score_source,
+        description,
+        vivino_url: null,
+    };
+}
 // POST /api/admin/parse-screenshot — parse a wine offer screenshot
 router.post('/parse-screenshot', multerSingle, async (req, res) => {
     try {
@@ -69,7 +161,6 @@ router.post('/parse-screenshot', multerSingle, async (req, res) => {
         const image = await jimp_1.Jimp.read(buffer);
         const imgWidth = image.width;
         const imgHeight = image.height;
-        // Bottle is in the upper-left to upper-center area
         const cropX = 0;
         const cropY = 50; // skip status bar
         const cropWidth = Math.min(Math.round(imgWidth * 0.60), imgWidth);
@@ -79,47 +170,18 @@ router.post('/parse-screenshot', multerSingle, async (req, res) => {
             .crop({ x: cropX, y: cropY, w: cropWidth, h: cropHeight })
             .getBuffer(jimp_1.JimpMime.png);
         const bottleBase64 = `data:image/png;base64,${croppedBuffer.toString('base64')}`;
-        // ── 2. Parse wine details using OpenAI Vision ──────────────────────────
-        let parsed;
-        if (!process.env.OPENAI_API_KEY) {
-            // No API key — return mock data for testing
-            console.log('[parse-screenshot] OPENAI_API_KEY not set, returning mock data');
-            parsed = MOCK_PARSED;
-        }
-        else {
-            const openai = new openai_1.default({ apiKey: process.env.OPENAI_API_KEY });
-            const base64Image = buffer.toString('base64');
-            const mimeType = file.mimetype;
-            const response = await openai.chat.completions.create({
-                model: 'gpt-4o',
-                max_tokens: 1000,
-                messages: [
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: PARSE_PROMPT },
-                            {
-                                type: 'image_url',
-                                image_url: {
-                                    url: `data:${mimeType};base64,${base64Image}`,
-                                    detail: 'high',
-                                },
-                            },
-                        ],
-                    },
-                ],
-            });
-            const text = response.choices[0].message.content ?? '';
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                res.status(422).json({ error: 'Could not extract JSON from OpenAI response', raw: text });
-                return;
-            }
-            parsed = JSON.parse(jsonMatch[0]);
-        }
+        // ── 2. OCR the screenshot with Tesseract ──────────────────────────────
+        const worker = await (0, tesseract_js_1.createWorker)('eng+fra');
+        const { data: { text } } = await worker.recognize(buffer);
+        await worker.terminate();
+        console.log('[parse-screenshot] OCR text:', text.slice(0, 500));
+        // ── 3. Parse fields from OCR text ─────────────────────────────────────
+        const parsed = parseOcrText(text);
+        console.log('[parse-screenshot] Parsed:', JSON.stringify(parsed));
         res.json({
             parsed,
             bottle_image_base64: bottleBase64,
+            ocr_text: text, // include for debugging
         });
     }
     catch (err) {
