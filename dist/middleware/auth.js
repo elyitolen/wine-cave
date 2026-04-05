@@ -46,7 +46,11 @@ function upsertUser(telegramUser) {
     const telegram_id = String(telegramUser.id);
     const existing = db_1.default.prepare('SELECT * FROM users WHERE telegram_id = ?').get(telegram_id);
     const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-    const is_admin = ADMIN_IDS.includes(telegram_id) ? 1 : (existing?.is_admin ?? 0);
+    // Always re-evaluate admin status against ADMIN_IDS on every login
+    const isInAdminList = ADMIN_IDS.includes(telegram_id);
+    const is_admin = isInAdminList ? 1 : (existing?.is_admin ?? 0);
+    // Log for debugging
+    console.log(`[auth] user=${telegram_id} adminList=${JSON.stringify(ADMIN_IDS)} inList=${isInAdminList} is_admin=${is_admin}`);
     if (existing) {
         db_1.default.prepare(`
       UPDATE users SET first_name = ?, last_name = ?, username = ?, is_admin = ?
