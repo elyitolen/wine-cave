@@ -150,6 +150,74 @@ function parseOcrText(text) {
         vivino_url: null,
     };
 }
+// ── Vivino URL lookup via Brave Search ──────────────────────────────────────
+async function findVivinoUrl(producer, title, vintage) {
+    try {
+        // Build search query: site:vivino.com {producer} {key name words} {vintage}
+        const nameWords = (title || '').replace(producer || '', '').trim();
+        const queryParts = [
+            'site:vivino.com',
+            producer || '',
+            nameWords,
+            vintage ? String(vintage) : '',
+        ].filter(Boolean);
+        const query = queryParts.join(' ');
+        const res = await fetch('https://search.brave.com/search?q=' + encodeURIComponent(query), {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+            signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok)
+            return null;
+        const html = await res.text();
+        // Extract all vivino.com wine URLs from the HTML
+        const urlMatches = html.match(/https:\/\/www\.vivino\.com[^"&<> ]*/g) || [];
+        const vivinoUrls = [...new Set(urlMatches)].filter(u => /\/w\/\d+/.test(u));
+        if (vivinoUrls.length === 0)
+            return null;
+        // Score each candidate URL against producer/title/vintage
+        const normalize = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+        const prodNorm = normalize(producer || '');
+        const titleNorm = normalize(title || '');
+        const yearStr = vintage ? String(vintage) : '';
+        // Key words to match (length > 3 to avoid noise)
+        const prodWords = prodNorm.split(' ').filter(w => w.length > 3);
+        const titleWords = titleNorm.split(' ').filter(w => w.length > 3);
+        let bestUrl = null;
+        let bestScore = 0;
+        for (const url of vivinoUrls.slice(0, 8)) {
+            const slug = normalize(url);
+            let score = 0;
+            // Vintage year match — highest weight
+            if (yearStr && (url.includes('year=' + yearStr) || url.includes('-' + yearStr)))
+                score += 4;
+            // Producer name words in slug
+            prodWords.forEach(w => { if (slug.includes(w))
+                score += 2; });
+            // Title words in slug
+            titleWords.forEach(w => { if (slug.includes(w))
+                score += 1; });
+            if (score > bestScore) {
+                bestScore = score;
+                bestUrl = url;
+            }
+        }
+        // Require at minimum: vintage year match (4) + at least one name word (1) = 5
+        // OR strong producer + title match without vintage (useful for some queries)
+        if (bestScore < 5)
+            return null;
+        // Normalise URL: strip country prefix (US/, NL/, etc.) → use canonical /en/ form
+        const canonical = bestUrl.replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/en\//, 'https://www.vivino.com/').replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/([a-z]{2})\//, 'https://www.vivino.com/$2/');
+        return canonical;
+    }
+    catch (err) {
+        console.error('[findVivinoUrl] Error:', err);
+        return null;
+    }
+}
 // POST /api/admin/parse-screenshot — parse a wine offer screenshot
 router.post('/parse-screenshot', multerSingle, async (req, res) => {
     try {
@@ -243,6 +311,15 @@ router.post('/parse-screenshot', multerSingle, async (req, res) => {
         // ── 3. Parse fields from OCR text ─────────────────────────────────────
         const parsed = parseOcrText(text);
         console.log('[parse-screenshot] Parsed:', JSON.stringify(parsed));
+        // ── 4. Find Vivino URL ──────────────────────────────────────────────────
+        const vivinoUrl = await findVivinoUrl(parsed.producer, parsed.title, parsed.vintage);
+        if (vivinoUrl) {
+            parsed.vivino_url = vivinoUrl;
+            console.log('[parse-screenshot] Vivino URL:', vivinoUrl);
+        }
+        else {
+            console.log('[parse-screenshot] No confident Vivino match found');
+        }
         res.json({
             parsed,
             bottle_image_base64: bottleBase64,
