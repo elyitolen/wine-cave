@@ -153,12 +153,18 @@ function parseOcrText(text) {
 // ── Vivino URL lookup via Brave Search ──────────────────────────────────────
 async function findVivinoUrl(producer, title, vintage) {
     try {
-        // Build search query: site:vivino.com {producer} {title words} {vintage}
-        const nameWords = (title || '').replace(producer || '', '').trim();
+        // Build search query: site:vivino.com {clean title} {vintage}
+        // Strip parenthetical classifiers like "(1er Grand Cru Classé A)" and trailing year from OCR title
+        const cleanTitleForSearch = (title || '')
+            .replace(/\([^)]*\)/g, ' ') // remove (parenthetical content)
+            .replace(/\d{4}/g, ' ') // remove years (vintage already added separately)
+            .replace(/\s+/g, ' ')
+            .trim();
+        // Normalize to ASCII — accented chars (é, ü, etc.) confuse Yahoo's URL encoding
+        const toAscii = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\x00-\x7F]/g, '');
         const queryParts = [
             'site:vivino.com',
-            producer || '',
-            nameWords,
+            toAscii(cleanTitleForSearch),
             vintage ? String(vintage) : '',
         ].filter(Boolean);
         const query = queryParts.join(' ');
