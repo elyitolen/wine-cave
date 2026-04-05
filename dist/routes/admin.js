@@ -213,7 +213,7 @@ async function findVivinoUrl(producer, title, vintage) {
         if (!best)
             return null;
         // Normalise URL: strip country/locale prefix → canonical form
-        const canonical = bestUrl
+        const canonical = best
             .replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/en\//, 'https://www.vivino.com/')
             .replace(/https:\/\/www\.vivino\.com\/[A-Z]{2}(-[A-Z]{2})?\/([a-z]{2})\//, 'https://www.vivino.com/$2/');
         return canonical;
