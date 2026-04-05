@@ -192,34 +192,25 @@ async function findVivinoUrl(producer, title, vintage) {
         const uniqueUrls = [...new Set(vivinoUrls)];
         if (uniqueUrls.length === 0)
             return null;
-        // Score candidates against producer/title/vintage
-        const normalize = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
-        const prodNorm = normalize(producer || '');
-        const titleNorm = normalize(title || '');
         const yearStr = vintage ? String(vintage) : '';
-        const prodWords = prodNorm.split(' ').filter(w => w.length > 3);
-        const titleWords = titleNorm.split(' ').filter(w => w.length > 3);
-        let bestUrl = null;
-        let bestScore = 0;
-        for (const url of uniqueUrls.slice(0, 8)) {
+        // Yahoo already ranks by relevance — prefer first URL that has the correct vintage year.
+        // Fall back to first URL with any vintage if no year match found.
+        const withVintage = uniqueUrls.filter(u => yearStr && u.includes('year=' + yearStr));
+        const withoutVintage = uniqueUrls.filter(u => !yearStr || !u.includes('year='));
+        // Quick sanity-check: must contain at least one word from the wine name in its slug
+        const normalize = (s) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+        const cleanTitle = (title || '')
+            .replace(/\([^)]*\)/g, ' ')
+            .replace(/\d{4}/g, ' ')
+            .trim();
+        const titleSlug = normalize(cleanTitle);
+        const titleWords = titleSlug.split(' ').filter(w => w.length > 4);
+        const isRelevant = (url) => {
             const slug = normalize(url);
-            let score = 0;
-            // Vintage year in URL (year= param or slug) — highest weight
-            if (yearStr && (url.includes('year=' + yearStr) || url.includes('-' + yearStr)))
-                score += 4;
-            // Producer words in slug
-            prodWords.forEach(w => { if (slug.includes(w))
-                score += 2; });
-            // Title words in slug
-            titleWords.forEach(w => { if (slug.includes(w))
-                score += 1; });
-            if (score > bestScore) {
-                bestScore = score;
-                bestUrl = url;
-            }
-        }
-        // Require vintage match (4) + at least 1 name word match (1) = 5 minimum
-        if (bestScore < 5)
+            return titleWords.some(w => slug.includes(w));
+        };
+        const best = [...withVintage, ...withoutVintage].find(isRelevant);
+        if (!best)
             return null;
         // Normalise URL: strip country/locale prefix → canonical form
         const canonical = bestUrl
