@@ -6,7 +6,6 @@
   "engines": { "node": ">=20.0.0" },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
-    "jimp": "^0.22.12",
-    "@anthropic-ai/sdk": "^0.40.0"
+    "jimp": "^0.22.12"
   }
 }
